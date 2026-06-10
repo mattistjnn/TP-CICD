@@ -1,40 +1,41 @@
-# CI/CD Demo — Nginx Pipeline
+# CI/CD Demo — Nginx + Snake 3D
 
-Projet réalisé dans le cadre du cours CI/CD (EPSI).  
-Pipeline GitHub Actions sur un serveur nginx dockerisé — 3 niveaux progressifs.
+> TP EPSI — Pipeline GitHub Actions sur un serveur nginx dockerisé, 3 niveaux progressifs.
 
 ---
 
-## Schéma du pipeline
+## C'est quoi ce projet ?
+
+Un serveur **nginx** qui sert une page web (un Snake 3D), emballé dans une image **Docker**, avec une pipeline **GitHub Actions** complète qui vérifie, teste et déploie automatiquement à chaque push.
+
+L'idée : illustrer concrètement ce qu'une vraie pipeline CI/CD fait en entreprise — du commit au déploiement en production, sans intervention manuelle risquée.
+
+---
+
+## Pipeline — vue d'ensemble
 
 ```
-Push / PR
-    │
-    ▼
-┌─────────────────┐
-│  check-files    │  Niveau 1 & 2 — Vérifie que Dockerfile, nginx.conf
-│                 │  et index.html sont bien présents dans le repo
-└────────┬────────┘
+ Push / Pull Request
          │
          ▼
-┌─────────────────┐
-│ build-and-test  │  Niveau 1 — docker build + nginx -t (test config)
-│                 │  Niveau 2 — test HTTP port 8080 + endpoint /health
-└────────┬────────┘
+ ┌───────────────┐
+ │  check-files  │  ← vérifie que les fichiers clés existent
+ └───────┬───────┘
          │
-         │  (uniquement sur push vers main)
          ▼
-┌─────────────────┐
-│    publish      │  Niveau 3 — pousse l'image sur GHCR
-│                 │  avec deux tags : :latest et :<commit-sha>
-└────────┬────────┘
-         │
-         │  (validation manuelle requise)
+ ┌───────────────┐
+ │ build-and-test│  ← build Docker + test config nginx + tests HTTP
+ └───────┬───────┘
+         │  (push sur main seulement)
          ▼
-┌─────────────────┐
-│     deploy      │  Niveau 3 — déploiement en production
-│  [env: prod]    │  bloqué jusqu'à approbation d'un reviewer
-└─────────────────┘
+ ┌───────────────┐
+ │    publish    │  ← publie l'image sur GHCR avec tag :sha + :latest
+ └───────┬───────┘
+         │  (approbation manuelle requise)
+         ▼
+ ┌───────────────┐
+ │    deploy     │  ← déploiement en production
+ └───────────────┘
 ```
 
 ---
@@ -45,74 +46,97 @@ Push / PR
 .
 ├── .github/
 │   └── workflows/
-│       └── ci.yml          # Pipeline GitHub Actions (3 niveaux)
+│       └── ci.yml          # toute la pipeline (3 niveaux)
 ├── html/
-│   └── index.html          # Page servie par nginx
+│   └── index.html          # le Snake 3D servi par nginx
 ├── nginx/
-│   └── nginx.conf          # Config nginx avec endpoint /health
-├── Dockerfile              # Image nginx:alpine
+│   └── nginx.conf          # config nginx + endpoint /health
+├── Dockerfile              # image nginx:alpine
 └── README.md
 ```
 
 ---
 
-## Niveau 1 — Novice : pipeline de build
+## Les 3 niveaux
 
-**Ce que fait la pipeline :**
-1. Vérifie que les fichiers essentiels sont présents (`check-files`)
-2. Build l'image Docker (`docker build`)
-3. Teste la configuration nginx (`nginx -t`) — échoue si la config est invalide
+### Niveau 1 — Novice : CI de base
 
-**Tester l'échec volontaire :**  
-Dans `ci.yml`, décommentez le job `break-test` pour simuler une config nginx cassée
-et observer que la pipeline passe en rouge.
+**Objectif :** s'assurer que le projet se build et que nginx démarre sans erreur.
+
+| Job | Ce qu'il fait |
+|-----|--------------|
+| `check-files` | vérifie que `Dockerfile`, `nginx.conf` et `index.html` sont présents |
+| `build-and-test` | `docker build` + `nginx -t` (teste la syntaxe de la config) |
+
+**Tester l'échec volontaire** — dans `ci.yml`, décommente le job `break-test` :
+il injecte une config nginx invalide et montre la pipeline passer au rouge.
 
 ---
 
-## Niveau 2 — Engineer : tests automatiques
+### Niveau 2 — Engineer : tests automatiques
 
-**Améliorations par rapport au niveau 1 :**
-- Déclenchement sur `push` **et** `pull_request` vers `main`
-- Lancement réel du conteneur après le build
-- Test de la réponse HTTP (code 200 attendu sur `/`)
-- Test de l'endpoint `/health` (retourne `OK` avec code 200)
+**Objectif :** tester que l'application répond vraiment une fois démarrée.
+
+En plus du niveau 1 :
+- Déclenché sur `push` **et** `pull_request` vers `main`
+- Lance le conteneur après le build
+- Vérifie que `/` répond HTTP 200
+- Vérifie que `/health` répond HTTP 200 avec le corps `OK`
 - Aucun secret dans le code ni dans les logs
 
 ---
 
-## Niveau 3 — Architect : registry + approbation manuelle
+### Niveau 3 — Architect : registry + approbation manuelle
 
-**Améliorations par rapport au niveau 2 :**
-- Publication de l'image dans **GitHub Container Registry (GHCR)**
-- Deux tags sur chaque image :
-  - `:latest` — pour référencer la dernière version
-  - `:<commit-sha>` — pour une traçabilité exacte (immutable)
-- **Validation manuelle** avant déploiement via les *GitHub Environments*
+**Objectif :** reproduire un workflow d'entreprise complet.
 
-**Configuration requise pour la validation manuelle :**
-1. Aller dans `Settings → Environments → New environment`
-2. Nommer l'environnement `production`
-3. Ajouter des *Required reviewers* (votre compte GitHub)
-4. Lors d'un push sur `main`, le job `deploy` sera bloqué en attente d'approbation
+En plus du niveau 2 :
+- Publie l'image dans **GitHub Container Registry (GHCR)**
+- Deux tags par image :
+  - `:latest` — toujours la dernière version
+  - `:<commit-sha>` — traçabilité exacte, rollback possible à tout moment
+- Le job `deploy` **attend une approbation manuelle** avant de se lancer
+
+**Configurer l'approbation manuelle (une seule fois) :**
+1. `Settings` → `Environments` → `New environment` → nom : `production`
+2. Cocher `Required reviewers` → ajouter ton compte GitHub
+3. `Save protection rules`
+
+À chaque push sur `main`, GitHub t'enverra une notification pour approuver le déploiement.
 
 ---
 
-## Lancer le projet localement
+## Lancer localement
 
 ```bash
-# Build
+# Build de l'image
 docker build -t nginx-ci-demo .
 
-# Tester la config nginx
+# Vérifier la config nginx
 docker run --rm nginx-ci-demo nginx -t
 
-# Lancer le serveur
+# Démarrer le serveur
 docker run -d --name nginx-test -p 8080:80 nginx-ci-demo
 
-# Tester
-curl http://localhost:8080        # page HTML
-curl http://localhost:8080/health # retourne "OK"
+# Tester les endpoints
+curl http://localhost:8080          # → page Snake 3D
+curl http://localhost:8080/health   # → OK
 
 # Stopper
 docker rm -f nginx-test
 ```
+
+---
+
+## Déployer sur GitHub
+
+```bash
+git init
+git add .
+git commit -m "feat: snake 3D + pipeline CI/CD"
+git remote add origin https://github.com/TON_USERNAME/ci-cd-epsi.git
+git branch -M main
+git push -u origin main
+```
+
+La pipeline démarre automatiquement. Résultat visible dans l'onglet **Actions** du repo.
