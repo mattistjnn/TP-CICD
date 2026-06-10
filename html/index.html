@@ -1,0 +1,383 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Snake 3D</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { background: #06060f; overflow: hidden; font-family: 'Segoe UI', sans-serif; }
+  canvas { display: block; }
+
+  #hud {
+    position: fixed; top: 24px; left: 50%; transform: translateX(-50%);
+    text-align: center; pointer-events: none; z-index: 10;
+  }
+  #score {
+    font-size: 3rem; font-weight: 900; letter-spacing: 4px;
+    color: #00ff88; text-shadow: 0 0 24px #00ff88, 0 0 48px #00ff88;
+  }
+  #hi {
+    font-size: 0.85rem; color: rgba(255,255,255,0.35); margin-top: 2px;
+    letter-spacing: 2px; text-transform: uppercase;
+  }
+  #keys {
+    position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%);
+    color: rgba(255,255,255,0.2); font-size: 0.75rem; pointer-events: none;
+    letter-spacing: 1px;
+  }
+
+  #overlay {
+    position: fixed; inset: 0; display: flex; flex-direction: column;
+    align-items: center; justify-content: center;
+    background: radial-gradient(ellipse at center, rgba(0,20,40,0.92) 0%, rgba(0,0,0,0.97) 100%);
+    z-index: 20;
+  }
+  #overlay h1 {
+    font-size: 3.5rem; font-weight: 900; letter-spacing: 3px;
+    background: linear-gradient(135deg, #00ff88, #00ccff);
+    -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+    filter: drop-shadow(0 0 20px rgba(0,255,136,0.6));
+    margin-bottom: 0.5rem;
+  }
+  #overlay-sub {
+    color: rgba(255,255,255,0.5); font-size: 1.1rem; margin-bottom: 1.5rem;
+  }
+  #final-score {
+    font-size: 1.8rem; color: #fff; margin-bottom: 1.8rem;
+    display: none; font-weight: bold;
+  }
+  #final-score span { color: #00ff88; }
+  button {
+    padding: 14px 48px; font-size: 1.1rem; font-weight: 800;
+    background: linear-gradient(135deg, #00ff88, #00ccff);
+    border: none; border-radius: 50px; cursor: pointer; color: #06060f;
+    letter-spacing: 1px; text-transform: uppercase;
+    transition: transform 0.15s, filter 0.15s;
+    filter: drop-shadow(0 0 12px rgba(0,255,136,0.5));
+  }
+  button:hover { transform: scale(1.06); filter: drop-shadow(0 0 24px rgba(0,255,136,0.8)); }
+  button:active { transform: scale(0.97); }
+</style>
+</head>
+<body>
+
+<div id="hud">
+  <div id="score">0</div>
+  <div id="hi">meilleur : 0</div>
+</div>
+<div id="keys">↑ ↓ ← → &nbsp;|&nbsp; Z Q S D</div>
+
+<div id="overlay">
+  <h1>🐍 SNAKE 3D</h1>
+  <div id="overlay-sub">Mange les pommes. Ne te mords pas la queue.</div>
+  <div id="final-score">Score : <span id="fs">0</span></div>
+  <button id="btn">Jouer</button>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script>
+// ─── Scene ────────────────────────────────────────────────────────────────────
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x06060f);
+scene.fog = new THREE.FogExp2(0x06060f, 0.035);
+
+const camera = new THREE.PerspectiveCamera(52, innerWidth / innerHeight, 0.1, 200);
+camera.position.set(0, 22, 22);
+camera.lookAt(0, 0, 0);
+
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.setSize(innerWidth, innerHeight);
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+document.body.appendChild(renderer.domElement);
+
+window.addEventListener('resize', () => {
+  camera.aspect = innerWidth / innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+});
+
+// ─── Lights ───────────────────────────────────────────────────────────────────
+scene.add(new THREE.AmbientLight(0x223344, 1));
+
+const sun = new THREE.DirectionalLight(0xffffff, 0.7);
+sun.position.set(10, 25, 10);
+sun.castShadow = true;
+sun.shadow.mapSize.set(2048, 2048);
+Object.assign(sun.shadow.camera, { left:-14, right:14, top:14, bottom:-14 });
+scene.add(sun);
+
+const glow = new THREE.PointLight(0x00ff88, 3, 14);
+glow.position.set(0, 4, 0);
+scene.add(glow);
+
+const foodGlow = new THREE.PointLight(0xff2222, 2, 8);
+scene.add(foodGlow);
+
+// ─── Arena ────────────────────────────────────────────────────────────────────
+const GRID = 20, HALF = 10;
+
+const ground = new THREE.Mesh(
+  new THREE.PlaneGeometry(GRID, GRID),
+  new THREE.MeshStandardMaterial({ color: 0x0b0b1e, roughness: 0.95 })
+);
+ground.rotation.x = -Math.PI / 2;
+ground.position.y = -0.51;
+ground.receiveShadow = true;
+scene.add(ground);
+
+const gridHelper = new THREE.GridHelper(GRID, GRID, 0x112233, 0x112233);
+gridHelper.position.y = -0.5;
+scene.add(gridHelper);
+
+// Neon border
+const wallMat = new THREE.MeshStandardMaterial({
+  color: 0x00ccff, emissive: 0x00ccff, emissiveIntensity: 1.2,
+  transparent: true, opacity: 0.5
+});
+const makeWall = (sx, sz, x, z) => {
+  const w = new THREE.Mesh(new THREE.BoxGeometry(sx, 0.25, sz), wallMat);
+  w.position.set(x, -0.38, z);
+  scene.add(w);
+};
+makeWall(GRID + 0.2, 0.08, 0,    -HALF);
+makeWall(GRID + 0.2, 0.08, 0,     HALF);
+makeWall(0.08, GRID + 0.2, -HALF, 0);
+makeWall(0.08, GRID + 0.2,  HALF, 0);
+
+// ─── Helpers ──────────────────────────────────────────────────────────────────
+function g2w(gx, gz) {
+  return new THREE.Vector3(gx - HALF + 0.5, 0, gz - HALF + 0.5);
+}
+
+// ─── Geometries ───────────────────────────────────────────────────────────────
+const BOX_GEO  = new THREE.BoxGeometry(0.86, 0.86, 0.86);
+const FOOD_GEO = new THREE.SphereGeometry(0.45, 20, 20);
+
+// ─── Game State ───────────────────────────────────────────────────────────────
+let snake, dir, nextDir, food, score, speed, running, highScore = 0;
+let snakeMeshes = [], foodMesh = null, ticker = null, particles = [];
+let camShake = 0;
+
+function randFood() {
+  let p;
+  do { p = { x: Math.floor(Math.random() * GRID), z: Math.floor(Math.random() * GRID) }; }
+  while (snake.some(s => s.x === p.x && s.z === p.z));
+  return p;
+}
+
+function makeFoodMesh() {
+  if (foodMesh) scene.remove(foodMesh);
+  food = randFood();
+  foodMesh = new THREE.Mesh(FOOD_GEO, new THREE.MeshStandardMaterial({
+    color: 0xff2233, emissive: 0xff1100, emissiveIntensity: 1.2,
+    roughness: 0.1, metalness: 0.9
+  }));
+  const p = g2w(food.x, food.z);
+  foodMesh.position.set(p.x, 0, p.z);
+  foodMesh.castShadow = true;
+  scene.add(foodMesh);
+}
+
+function makeSegMesh(gx, gz, isHead) {
+  const mesh = new THREE.Mesh(BOX_GEO, new THREE.MeshStandardMaterial({
+    color: isHead ? 0x00ff88 : 0x00dd55,
+    emissive: isHead ? 0x004422 : 0x000000,
+    emissiveIntensity: isHead ? 0.6 : 0,
+    roughness: 0.25, metalness: 0.5
+  }));
+  const p = g2w(gx, gz);
+  mesh.position.set(p.x, 0, p.z);
+  mesh.castShadow = true;
+  scene.add(mesh);
+  return mesh;
+}
+
+function spawnParticles(wx, wz) {
+  for (let i = 0; i < 14; i++) {
+    const m = new THREE.Mesh(
+      new THREE.SphereGeometry(0.09, 4, 4),
+      new THREE.MeshBasicMaterial({ color: new THREE.Color().setHSL(Math.random() * 0.15, 1, 0.6) })
+    );
+    m.position.set(wx, 0, wz);
+    m.userData = {
+      vx: (Math.random() - 0.5) * 0.32,
+      vy: Math.random() * 0.28 + 0.06,
+      vz: (Math.random() - 0.5) * 0.32,
+      life: 1
+    };
+    scene.add(m);
+    particles.push(m);
+  }
+}
+
+function setScore(n) {
+  score = n;
+  document.getElementById('score').textContent = n;
+  if (n > highScore) {
+    highScore = n;
+    document.getElementById('hi').textContent = 'meilleur : ' + n;
+  }
+}
+
+function initGame() {
+  snakeMeshes.forEach(m => scene.remove(m)); snakeMeshes = [];
+  particles.forEach(m => scene.remove(m));   particles = [];
+  if (ticker) clearInterval(ticker);
+
+  snake   = [{ x:12, z:10 }, { x:11, z:10 }, { x:10, z:10 }];
+  dir     = { x:1, z:0 };
+  nextDir = { x:1, z:0 };
+  speed   = 155;
+  running = true;
+
+  snake.forEach((s, i) => snakeMeshes.push(makeSegMesh(s.x, s.z, i === 0)));
+  makeFoodMesh();
+  setScore(0);
+  ticker = setInterval(step, speed);
+}
+
+function step() {
+  dir = { ...nextDir };
+  const h = snake[0];
+  const nh = { x: h.x + dir.x, z: h.z + dir.z };
+
+  if (nh.x < 0 || nh.x >= GRID || nh.z < 0 || nh.z >= GRID
+      || snake.some(s => s.x === nh.x && s.z === nh.z)) {
+    return doGameOver();
+  }
+
+  const ate = nh.x === food.x && nh.z === food.z;
+
+  snake.unshift(nh);
+  snakeMeshes.unshift(makeSegMesh(nh.x, nh.z, true));
+
+  // Downgrade old head to body
+  if (snakeMeshes[1]) {
+    const m = snakeMeshes[1].material;
+    m.color.setHex(0x00cc55); m.emissive.setHex(0x000000); m.emissiveIntensity = 0;
+  }
+
+  if (!ate) {
+    snake.pop();
+    scene.remove(snakeMeshes.pop());
+  } else {
+    setScore(score + 1);
+    const wp = g2w(food.x, food.z);
+    spawnParticles(wp.x, wp.z);
+    makeFoodMesh();
+    speed = Math.max(60, speed - 5);
+    clearInterval(ticker);
+    ticker = setInterval(step, speed);
+  }
+}
+
+function doGameOver() {
+  running = false;
+  clearInterval(ticker);
+  camShake = 0.5;
+
+  document.getElementById('fs').textContent = score;
+  document.getElementById('final-score').style.display = 'block';
+  document.getElementById('overlay').querySelector('h1').textContent = '💀 GAME OVER';
+  document.getElementById('overlay-sub').textContent =
+    score >= 15 ? '🔥 Tu es une légende !' :
+    score >= 8  ? '😎 Pas mal du tout !' :
+    score >= 3  ? '👍 Continue comme ça !' : '😬 Allez, encore un essai !';
+  document.getElementById('btn').textContent = 'Rejouer';
+  document.getElementById('overlay').style.display = 'flex';
+}
+
+// ─── Controls ─────────────────────────────────────────────────────────────────
+const KEY_DIR = {
+  ArrowUp: {x:0,z:-1}, z:{x:0,z:-1},
+  ArrowDown: {x:0,z:1}, s:{x:0,z:1},
+  ArrowLeft: {x:-1,z:0}, q:{x:-1,z:0},
+  ArrowRight: {x:1,z:0}, d:{x:1,z:0},
+};
+document.addEventListener('keydown', e => {
+  if (!running) return;
+  const nd = KEY_DIR[e.key];
+  if (nd && !(nd.x === -dir.x && nd.z === -dir.z)) {
+    nextDir = nd;
+    if (e.key.startsWith('Arrow')) e.preventDefault();
+  }
+});
+
+document.getElementById('btn').addEventListener('click', () => {
+  document.getElementById('overlay').style.display = 'none';
+  initGame();
+});
+
+// ─── Render Loop ──────────────────────────────────────────────────────────────
+const clock = new THREE.Clock();
+let t = 0;
+const basePos = camera.position.clone();
+
+function animate() {
+  requestAnimationFrame(animate);
+  const dt = Math.min(clock.getDelta(), 0.05);
+  t += dt;
+
+  // Food animation
+  if (foodMesh) {
+    foodMesh.rotation.y += dt * 2.5;
+    foodMesh.rotation.x += dt * 1.2;
+    foodMesh.position.y = Math.sin(t * 3.5) * 0.18;
+    foodMesh.material.emissiveIntensity = 0.7 + Math.sin(t * 7) * 0.5;
+    foodGlow.position.copy(foodMesh.position);
+  }
+
+  // Particles
+  particles = particles.filter(p => {
+    const u = p.userData;
+    u.life -= dt * 2;
+    p.position.x += u.vx;
+    p.position.y += u.vy;
+    p.position.z += u.vz;
+    u.vy -= dt * 1.2;
+    p.scale.setScalar(Math.max(0, u.life));
+    if (u.life <= 0) { scene.remove(p); return false; }
+    return true;
+  });
+
+  // Snake head glow follows head
+  if (snakeMeshes[0]) {
+    glow.position.x += (snakeMeshes[0].position.x - glow.position.x) * 0.18;
+    glow.position.z += (snakeMeshes[0].position.z - glow.position.z) * 0.18;
+  }
+
+  // Body bob + color fade
+  snakeMeshes.forEach((m, i) => {
+    const bob = i === 0 ? Math.sin(t * 8) * 0.06 : Math.sin(t * 5 + i * 0.5) * 0.035;
+    m.position.y = bob;
+    if (i > 0) {
+      const fade = Math.max(0.2, 1 - i / snakeMeshes.length);
+      m.material.color.setRGB(0, 0.5 + fade * 0.4, 0.2 + fade * 0.15);
+    }
+  });
+
+  // Camera shake on game over
+  if (camShake > 0) {
+    camShake -= dt * 3;
+    const s = camShake * 0.4;
+    camera.position.set(
+      basePos.x + (Math.random() - 0.5) * s,
+      basePos.y + (Math.random() - 0.5) * s,
+      basePos.z + (Math.random() - 0.5) * s
+    );
+    camera.lookAt(0, 0, 0);
+  } else if (camShake <= 0 && camShake !== 0) {
+    camera.position.copy(basePos);
+    camera.lookAt(0, 0, 0);
+    camShake = 0;
+  }
+
+  renderer.render(scene, camera);
+}
+animate();
+</script>
+</body>
+</html>

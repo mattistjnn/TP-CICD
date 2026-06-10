@@ -1,0 +1,152 @@
+name: CI/CD Pipeline
+
+# ─────────────────────────────────────────────────────────────
+# NIVEAU 2 : déclenchement sur push ET pull_request vers main
+# ─────────────────────────────────────────────────────────────
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+
+  # ───────────────────────────────────────────────────────────
+  # NIVEAU 1 & 2 : Vérification des fichiers essentiels
+  # ───────────────────────────────────────────────────────────
+  check-files:
+    name: Vérification des fichiers
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout du code
+        uses: actions/checkout@v4
+
+      - name: Vérifier la présence des fichiers essentiels
+        run: |
+          MISSING=0
+          for FILE in Dockerfile nginx/nginx.conf html/index.html; do
+            if [ -f "$FILE" ]; then
+              echo "✔ $FILE présent"
+            else
+              echo "✘ $FILE MANQUANT"
+              MISSING=1
+            fi
+          done
+          exit $MISSING
+
+  # ───────────────────────────────────────────────────────────
+  # NIVEAU 1 : Build de l'image + test config nginx
+  # NIVEAU 2 : Test HTTP + endpoint /health
+  # ───────────────────────────────────────────────────────────
+  build-and-test:
+    name: Build & Test
+    runs-on: ubuntu-latest
+    needs: check-files
+    steps:
+      - name: Checkout du code
+        uses: actions/checkout@v4
+
+      - name: Build de l'image Docker
+        run: docker build -t nginx-ci-demo .
+
+      # NIVEAU 1 : tester la configuration nginx
+      - name: Tester la configuration Nginx
+        run: docker run --rm nginx-ci-demo nginx -t
+
+      # NIVEAU 2 : lancer le conteneur et tester HTTP
+      - name: Lancer le conteneur
+        run: docker run -d --name nginx-test -p 8080:80 nginx-ci-demo
+
+      - name: Attendre le démarrage de nginx
+        run: sleep 2
+
+      - name: Tester la réponse HTTP (port 8080)
+        run: |
+          STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8080)
+          echo "Status HTTP: $STATUS"
+          [ "$STATUS" = "200" ] || (echo "ERREUR: réponse HTTP $STATUS" && exit 1)
+
+      # NIVEAU 2 : tester l'endpoint /health
+      - name: Tester l'endpoint /health
+        run: |
+          STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8080/health)
+          BODY=$(curl -s http://localhost:8080/health)
+          echo "Health status: $STATUS — body: $BODY"
+          [ "$STATUS" = "200" ] || (echo "ERREUR: /health retourne $STATUS" && exit 1)
+
+      - name: Arrêter le conteneur
+        if: always()
+        run: docker rm -f nginx-test || true
+
+  # ───────────────────────────────────────────────────────────
+  # NIVEAU 1 : démontrer l'échec pipeline
+  # (décommentez le bloc ci-dessous pour casser volontairement)
+  # ───────────────────────────────────────────────────────────
+  # break-test:
+  #   name: Test échec volontaire
+  #   runs-on: ubuntu-latest
+  #   steps:
+  #     - uses: actions/checkout@v4
+  #     - name: Simuler une config nginx cassée
+  #       run: |
+  #         echo "server { SYNTAXE INVALIDE" > /tmp/bad.conf
+  #         docker run --rm -v /tmp/bad.conf:/etc/nginx/conf.d/default.conf nginx:alpine nginx -t
+
+  # ───────────────────────────────────────────────────────────
+  # NIVEAU 3 : Publier l'image dans GitHub Container Registry
+  #            avec un tag basé sur le commit SHA
+  # S'exécute uniquement sur push vers main (pas sur les PR)
+  # ───────────────────────────────────────────────────────────
+  publish:
+    name: Publier sur GHCR
+    runs-on: ubuntu-latest
+    needs: build-and-test
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      image: ${{ steps.meta.outputs.image }}
+    steps:
+      - name: Checkout du code
+        uses: actions/checkout@v4
+
+      - name: Login sur GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Construire et pousser l'image (tag SHA + latest)
+        id: meta
+        run: |
+          IMAGE=ghcr.io/$(echo "${{ github.repository }}" | tr '[:upper:]' '[:lower:]')
+          echo "image=$IMAGE" >> $GITHUB_OUTPUT
+          docker build \
+            -t $IMAGE:${{ github.sha }} \
+            -t $IMAGE:latest \
+            .
+          docker push $IMAGE:${{ github.sha }}
+          docker push $IMAGE:latest
+          echo "Image publiée : $IMAGE:${{ github.sha }}"
+
+  # ───────────────────────────────────────────────────────────
+  # NIVEAU 3 : Validation manuelle avant déploiement
+  # Nécessite un environnement "production" configuré dans
+  # GitHub → Settings → Environments → Required reviewers
+  # ───────────────────────────────────────────────────────────
+  deploy:
+    name: Déploiement en production
+    runs-on: ubuntu-latest
+    needs: publish
+    environment: production
+    steps:
+      - name: Déploiement approuvé
+        run: |
+          IMAGE=ghcr.io/$(echo "${{ github.repository }}" | tr '[:upper:]' '[:lower:]')
+          echo "Déploiement de l'image : $IMAGE:${{ github.sha }}"
+          echo "Commande de déploiement à adapter selon votre infra :"
+          echo "  docker pull $IMAGE:${{ github.sha }}"
+          echo "  docker stop nginx-prod || true"
+          echo "  docker run -d --name nginx-prod -p 80:80 $IMAGE:${{ github.sha }}"
